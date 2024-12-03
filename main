@@ -5,7 +5,18 @@ nextflow.enable.dsl=2
 params.runFolder = '/data/NGSruns/NovaSeq/2024'
 params.samplesheet = '/data/NGSruns/NovaSeq/2024/Samplesheet'
 params.cramFolder = '/lnx01_data2/shared/dataArchive/lnx02/alignedData/hg38/novaRuns/2024/'
-params.fastFolder = '/lnx01_data2/shared/dataArchive/lnx02/fastgStorage/novaRuns'
+params.fastFolder = '/lnx01_data2/shared/dataArchive/lnx02/fastqStorage/novaRuns'
+
+
+params.BASE_DIR_AV1="/lnx01_data2/shared/patients/hg38/panels/2024/"                                                    
+params.BASE_DIR_MV1="/lnx01_data2/shared/patients/hg38/panels/MV1/"   
+
+params.BASE_DIR_WGS_lnx02="/fast/data/WGS_weekly_out"                                                                                                                  
+params.BASE_DIR_NGC_lnx02="/fast/data/NGC_WGS_local_novaRuns"
+params.BASE_DIR_WES_lnx02="/fast/data/WES"       
+
+params.Demulti_dir="/fast/demultiplexing"                                                                                            
+
 
 params.currentDay = new Date().format('yyMMdd') // Default to today's date
 
@@ -98,26 +109,6 @@ process CheckSheet {
 }
 
 
-process CheckCopyComplete {
-
-    input:
-    path sti
-
-    script:
-    """
-    echo "Monitoring for 'CopyComplete.txt' in the directory: $sti"
-    while true; do
-        if [ -f "${sti}/CopyComplete.txt" ]; then
-            echo "'CopyComplete.txt' found in $sti"
-            break  # Exit the loop if file is found
-        else
-            echo "'CopyComplete.txt' not found in $sti. Checking again in 15 minutes..."
-            sleep 900  # Sleep for 15 minutes before rechecking
-        fi
-    done
-    """
-}
-
 process DNAandRNAflags {
     input:
     path samplesheet
@@ -143,83 +134,43 @@ process DNAandRNAflags {
 }
 
 
+process CheckCopyComplete {
 
-/*process LaunchDemultiplex {
+    input:
+    path sti
+
+    script:
+    """
+    echo "Monitoring for 'CopyComplete.txt' in the directory: $sti"
+    while true; do
+        if [ -f "${sti}/CopyComplete.txt" ]; then
+            echo "'CopyComplete.txt' found in $sti"
+            break  # Exit the loop if file is found
+        else
+            echo "'CopyComplete.txt' not found in $sti. Checking again in 15 minutes..."
+            sleep 900  # Sleep for 15 minutes before rechecking
+        fi
+    done
+    """
+}
+
+
+process LaunchDemultiplex {
     input:
     path folder
     path samplesheet
+    val demulti_chan
     val DNA_FLAG 
     val RNA_FLAG
 
     script:
     """
-    gnome-terminal -- bash -c "source ~/.bashrc; nextflow run KGVejle/demultiplex -r main --runfolder "${folder}" --samplesheet "${samplesheet}" ${DNA_FLAG} ${RNA_FLAG} --keepwork"
+    gnome-terminal -- bash -c "source ~/.bashrc; cd \"$demulti_chan\"; nextflow run KGVejle/demultiplex -r main --runfolder "${folder}" --samplesheet "${samplesheet}" ${DNA_FLAG} ${RNA_FLAG} --keepwork"
     """
 
 }
 
-*/
 
-
-/*process MV1_samples {
-
-    input:
-    path fastq
-    path samplesheet
-    val currentday
-
-    script:
-    """
-    # Prepare the date-specific path in the fastq directory
-    date_folder_path=\$(find $fastq -type d -name "*$currentday*" -print -quit)
-
-    # Check if the date-specific folder exists and proceed
-    if [[ -z "$date_folder_path" ]]; then
-        echo "No directory found for the specified date: $currentday"
-        exit 0
-    else
-        echo "Checking in directory: $date_folder_path"
-    fi
-
-    # Extract samples with 'MV1' in their names from the samplesheet
-    grep -E 'MV1' $samplesheet > mv1_samples.txt
-    mv1_sample_count=\$(cat mv1_samples.txt | wc -l)
-
-    if [ "$mv1_sample_count" -eq 0 ]; then
-        echo "No MV1 samples found in the samplesheet."
-        exit 0
-    fi
-
-    echo "Found MV1 samples: $mv1_sample_count"
-    cat mv1_samples.txt
-
-    # Initialize the count of found files
-    all_found=false
-    while ! $all_found; do
-        found_count=0
-        while IFS= read -r line; do
-            sample_id=\$(echo "$line" | cut -f1)  # Assuming the first column is the sample ID
-            # Check if corresponding fastq files are present
-            if ls $date_folder_path/*"$sample_id"*R1*.fastq.gz 2>/dev/null; then
-                ((found_count++))
-            fi
-        done < mv1_samples.txt
-
-        echo "Progress: Found $found_count out of $mv1_sample_count MV1 sample fastq files."
-
-        if [[ "$found_count" -eq "$mv1_sample_count" ]]; then
-            all_found=true
-            echo "All required MV1 sample fastq files found."
-        else
-            echo "Not all MV1 sample fastq files found. Checking again in 15 minutes..."
-            sleep 900  # Sleep for 15 minutes
-        fi
-    done
-    
-    gnome-terminal -- bash -c 'echo "Hello MV1"; exec bash'
-    """
-}
-*/
 
 
 process Fastqfolder {
@@ -306,27 +257,57 @@ process Cramfolder {
     """
 }
 
-process AV1_samples {
+
+process MV1_samples {
+    errorStrategy 'ignore'
     input:
-    path cram_folder
+    val fastq_folder
     path samplesheet
+    val mv1_chan
+    val currentday
 
-    output:
-    path av1_samples.txt
-    
-    shell:
+    script:
     """
-    echo "$cram_folder"
-    # Extract samples with 'AV1' in their names from the samplesheet
-    grep -E 'AV1' "$samplesheet" > av1_samples.txt
-    av1_sample_count=\$(cat av1_samples.txt | wc -l)
+    echo "FASTQ directory: $fastq_folder"
+    echo "Samplesheet path: $samplesheet"
 
-    if [ "\$av1_sample_count" -eq 0 ]; then
-        echo "No AV1 samples found in the samplesheet."
-        exit 1
+    # Extract samples with 'MV1' in their names from the samplesheet
+    grep -E 'MV1' "$samplesheet" > mv1_samples.txt
+    mv1_sample_count=\$(cat mv1_samples.txt | wc -l)
+
+    if [ "\$mv1_sample_count" -eq 0 ]; then
+        echo "No MV1 samples found in the samplesheet. Skipping further processing."
     else
-        echo "Found AV1 samples: \$av1_sample_count"
-        cat av1_samples.txt
+        echo "Found MV1 samples: \$mv1_sample_count"
+        cat mv1_samples.txt
+
+        # Extract the MV1_NPN numbers
+        echo "Extracting MV1_NPN numbers:"
+        awk -F'[-_]' '{print \$1}' mv1_samples.txt > extracted_mv1_npn_numbers.txt
+        cat extracted_mv1_npn_numbers.txt
+
+        # Function to check if each sample in extracted_mv1_npn_numbers.txt has a matching FASTQ file
+        function check_samples_against_fastq_files() {
+            local sample_folder=\$1
+            local all_samples_matched=true
+            while IFS= read -r sample; do
+                if ls "\$sample_folder"/*"\$sample"*.fastq.gz > /dev/null 2>&1; then
+                    echo "Found matching FASTQ file for sample \$sample"
+                else
+                    echo "No matching FASTQ file found for sample \$sample"
+                    all_samples_matched=false
+                fi
+            done < extracted_mv1_npn_numbers.txt
+
+            return \$all_samples_matched
+        }
+
+        if check_samples_against_fastq_files "$fastq_folder"; then
+            echo "All samples have matching FASTQ files. Starting analysis..."
+            gnome-terminal -- bash -c "ssh raspau@10.163.117.64 'source ~/.bashrc; mkdir -p \"$mv1_chan/$currentday\"; cd \"$mv1_chan/$currentday\"; nextflow run KGVejle/germlineNGS -r main --panel MV1 --fastq $fastq_folder --server lnx01; exec bash'"
+        else
+            echo "Not all samples have matching FASTQ files. Skipping terminal execution."
+        fi
     fi
     """
 }
@@ -334,9 +315,272 @@ process AV1_samples {
 
 
 
-//process CNV_samples {}
-//process NGC_samples {}
-//process EV8_Alm_Onk {}
+process AV1_samples {
+    errorStrategy 'ignore'
+    input:
+    val cram_folder
+    path samplesheet
+    val av1_chan
+    val currentday
+
+    script:
+    """
+    echo "CRAM directory: $cram_folder"
+    echo "Samplesheet path: $samplesheet"
+
+    # Extract samples with 'AV1' in their names from the samplesheet
+    grep -E 'AV1' "$samplesheet" > av1_samples.txt
+    av1_sample_count=\$(cat av1_samples.txt | wc -l)
+
+    if [ "\$av1_sample_count" -eq 0 ]; then
+        echo "No AV1 samples found in the samplesheet. Skipping further processing."
+    else
+        echo "Found AV1 samples: \$av1_sample_count"
+        cat av1_samples.txt
+
+        # Extract the AV1_NPN numbers
+        echo "Extracting AV1_NPN numbers:"
+        awk -F'[-_]' '{print \$1}' av1_samples.txt > extracted_av1_npn_numbers.txt
+        cat extracted_av1_npn_numbers.txt
+
+        # Function to check if each sample in extracted_av1_npn_numbers.txt has a matching .cram file
+        function check_samples_against_cram_files() {
+            local sample_folder=\$1
+            local all_samples_matched=true
+            while IFS= read -r sample; do
+                if ls "\$sample_folder"/*"\$sample"*.cram > /dev/null 2>&1; then
+                    echo "Found matching CRAM file for sample \$sample"
+                else
+                    echo "No matching CRAM file found for sample \$sample"
+                    all_samples_matched=false
+                fi
+            done < extracted_av1_npn_numbers.txt
+
+            return \$all_samples_matched
+        }
+
+        if check_samples_against_cram_files "$cram_folder"; then
+            echo "All samples have matching CRAM files. Starting analysis..."
+            gnome-terminal -- bash -c "ssh raspau@10.163.117.64 'source ~/.bashrc; mkdir -p \"$av1_chan/$currentday\"; cd \"$av1_chan/$currentday\" ; nextflow run KGVejle/germlineNGS -r main --panel AV1 --cram $cram_folder --server lnx01; exec bash'"
+        else
+            echo "Not all samples have matching CRAM files. Skipping terminal execution."
+        fi
+    fi
+    """
+}
+
+
+process CNV_samples {
+    errorStrategy 'ignore'
+    input:
+    val cram_folder
+    path samplesheet
+    val CNV_chan
+    val currentday
+
+    script:
+    """
+    # Debugging outputs
+    echo "CRAM directory: $cram_folder"
+    echo "Samplesheet path: $samplesheet"
+    echo "Target directory: $CNV_chan"
+    echo "Current day: $currentday"
+
+    # Extract samples with 'WG4_CNV' in their names from the samplesheet
+    grep -E 'WG4_CNV' "$samplesheet" > CNV_samples.txt || true
+    CNV_sample_count=\$(cat CNV_samples.txt | wc -l)
+
+    if [ "\$CNV_sample_count" -eq 0 ]; then
+        echo "No CNV samples found in the samplesheet. Skipping further processing."
+        exit 0
+    else
+        echo "Found CNV samples: \$CNV_sample_count"
+        cat CNV_samples.txt
+
+        # Extract the CNV_NPN numbers
+        echo "Extracting CNV_NPN numbers:"
+        awk -F'[-_]' '{print \$1}' CNV_samples.txt > extracted_CNV_npn_numbers.txt
+        cat extracted_CNV_npn_numbers.txt
+
+        # Function to check if each sample has a matching .cram file
+        check_samples_against_cram_files() {
+            local sample_folder="\$1"
+            local all_samples_matched=true
+
+            while IFS= read -r sample; do
+                echo "Checking for .cram files for sample: \$sample"
+                if find "\$sample_folder" -name "*\$sample*.cram" | grep -q .; then
+                    echo "Found matching CRAM file for sample \$sample"
+                else
+                    echo "No matching CRAM file found for sample \$sample"
+                    all_samples_matched=false
+                fi
+            done < extracted_CNV_npn_numbers.txt
+
+            if [ "\$all_samples_matched" = true ]; then
+                return 0
+            else
+                return 1
+            fi
+        }
+
+        # Wait until all required .cram files are available
+        while ! check_samples_against_cram_files "$cram_folder"; do
+            echo "Not all samples have matching CRAM files. Rechecking in 15 minutes..."
+            sleep 900 # Sleep for 15 minutes
+        done
+
+        # Once all files are available, start the analysis
+        echo "All samples have matching CRAM files. Starting analysis..."
+        gnome-terminal -- bash -c "source ~/.bashrc; mkdir -p \"$CNV_chan/$currentday\"; cd \"$CNV_chan/$currentday\"; nextflow run KGVejle/germlineNGS -r main --panel WGS_CNV --cram $cram_folder --server lnx02; exec bash"
+    fi
+    """
+}
+
+
+
+process NGC_samples {
+    errorStrategy 'ignore'
+    input:
+    val cram_folder
+    path samplesheet
+    val NGC_chan
+    val currentday
+
+    script:
+    """
+    # Debugging outputs
+    echo "CRAM directory: $cram_folder"
+    echo "Samplesheet path: $samplesheet"
+    echo "Target directory: $NGC_chan"
+    echo "Current day: $currentday"
+
+    # Extract samples with 'WG4_NGC' in their names from the samplesheet
+    grep -E 'WG4_NGC' "$samplesheet" > NGC_samples.txt || true
+    NGC_sample_count=\$(cat NGC_samples.txt | wc -l)
+
+    if [ "\$NGC_sample_count" -eq 0 ]; then
+        echo "No NGC samples found in the samplesheet. Skipping further processing."
+        exit 0
+    else
+        echo "Found NGC samples: \$NGC_sample_count"
+        cat NGC_samples.txt
+
+        # Extract the NGC_NPN numbers
+        echo "Extracting NGC_NPN numbers:"
+        awk -F'[-_]' '{print \$1}' NGC_samples.txt > extracted_NGC_npn_numbers.txt
+        cat extracted_NGC_npn_numbers.txt
+
+        # Function to check if each sample has a matching .cram file
+        check_samples_against_cram_files() {
+            local sample_folder="\$1"
+            local all_samples_matched=true
+
+            while IFS= read -r sample; do
+                echo "Checking for .cram files for sample: \$sample"
+                if find "\$sample_folder" -name "*\$sample*.cram" | grep -q .; then
+                    echo "Found matching CRAM file for sample \$sample"
+                else
+                    echo "No matching CRAM file found for sample \$sample"
+                    all_samples_matched=false
+                fi
+            done < extracted_NGC_npn_numbers.txt
+
+            if [ "\$all_samples_matched" = true ]; then
+                return 0
+            else
+                return 1
+            fi
+        }
+
+        # Wait until all required .cram files are available
+        while ! check_samples_against_cram_files "$cram_folder"; do
+            echo "Not all samples have matching CRAM files. Rechecking in 15 minutes..."
+            sleep 900 # Sleep for 15 minutes
+        done
+
+        # Once all files are available, start the analysis
+        echo "All samples have matching CRAM files. Starting analysis..."
+        gnome-terminal -- bash -c "source ~/.bashrc; mkdir -p \"$NGC_chan/$currentday\"; cd \"$NGC_chan/$currentday\"; nextflow run MadsAagaard/germlineNGS -r main --panel NGC --cram $cram_folder --server lnx02; exec bash"
+    fi
+    """
+}
+
+
+
+
+process EV8_Alm_Onk {
+    errorStrategy 'ignore'
+    input:
+    val cram_folder
+    path samplesheet
+    val ev8_chan
+    val currentday
+
+    script:
+    """
+    # Debugging outputs
+    echo "CRAM directory: $cram_folder"
+    echo "Samplesheet path: $samplesheet"
+    echo "Target directory: $ev8_chan"
+    echo "Current day: $currentday"
+
+    # Extract samples with 'EV8_ALM' or 'EV8_ONK' in their names from the samplesheet
+    grep -E 'EV8_ALM|EV8_ONK' "$samplesheet" > EV8_samples.txt || true
+    EV8_sample_count=\$(cat EV8_samples.txt | wc -l)
+
+    if [ "\$EV8_sample_count" -eq 0 ]; then
+        echo "No EV8_ALM or EV8_ONK samples found in the samplesheet. Skipping further processing."
+        exit 0
+    else
+        echo "Found EV8_ALM or EV8_ONK samples: \$EV8_sample_count"
+        cat EV8_samples.txt
+
+        # Extract the sample identifiers
+        echo "Extracting sample identifiers:"
+        awk -F'[-_]' '{print \$1}' EV8_samples.txt > extracted_EV8_npn_numbers.txt
+        cat extracted_EV8_npn_numbers.txt
+
+        # Function to check if each sample has a matching .cram file
+        check_samples_against_cram_files() {
+            local sample_folder="\$1"
+            local all_samples_matched=true
+
+            while IFS= read -r sample; do
+                echo "Checking for .cram files for sample: \$sample"
+                if find "\$sample_folder" -name "*\$sample*.cram" | grep -q .; then
+                    echo "Found matching CRAM file for sample \$sample"
+                else
+                    echo "No matching CRAM file found for sample \$sample"
+                    all_samples_matched=false
+                fi
+            done < extracted_EV8_npn_numbers.txt
+
+            if [ "\$all_samples_matched" = true ]; then
+                return 0
+            else
+                return 1
+            fi
+        }
+
+        # Wait until all required .cram files are available
+        while ! check_samples_against_cram_files "$cram_folder"; do
+            echo "Not all samples have matching CRAM files. Rechecking in 15 minutes..."
+            sleep 900 # Sleep for 15 minutes
+        done
+
+        # Once all files are available, start the analysis
+        echo "All samples have matching CRAM files. Starting analysis..."
+        gnome-terminal -- bash -c "source ~/.bashrc; mkdir -p \"$ev8_chan/$currentday\"; cd \"$ev8_chan/$currentday\"; nextflow run KGVejle/germlineNGS -r main --panel WES --cram $cram_folder --server lnx02; exec bash"
+    fi
+    """
+}
+
+
+
+
+
+
 
 workflow {
     nova_chan = Channel.fromPath(params.runFolder)
@@ -346,23 +590,33 @@ workflow {
     CheckFolder(nova_chan, currentday_chan)
     CheckSheet(samplesheet_chan, currentday_chan)
 
+    DNAandRNAflags(CheckSheet.out)
     CheckCopyComplete(CheckFolder.out)
 
-    DNAandRNAflags(CheckSheet.out)
-
-    //LaunchDemultiplex(CheckFolder.out, CheckSheet.out, DNAandRNAflags.out.DNA_chan.ifEmpty(" "), DNAandRNAflags.out.RNA_chan.ifEmpty(" "))
-
+    LaunchDemultiplex(CheckFolder.out, CheckSheet.out, Demulti_chan, DNAandRNAflags.out.DNA_chan.ifEmpty(" "), DNAandRNAflags.out.RNA_chan.ifEmpty(" "))
 
 
     fastq_chan = Channel.fromPath(params.fastFolder)
     cram_chan = Channel.fromPath(params.cramFolder)
 
+
     Fastqfolder(fastq_chan, currentday_chan)
     Cramfolder(cram_chan, currentday_chan)
 
-    //MV1_samples(Fastqfolder.out, samplesheet_chan)
-    AV1_samples(Cramfolder.out, samplesheet_chan)
-    //CNV_samples(Cramfolder.out, samplesheet_chan)
-    //NGC_samples(Cramfolder.out, samplesheet_chan)
-    //EV8_Alm_Onk(Cramfolder.out, samplesheet_chan)
+    Demulti_chan = Channel.fromPath(params.Demulti_dir)
+
+    MV1_chan = Channel.fromPath(params.BASE_DIR_MV1)
+    AV1_chan = Channel.fromPath(params.BASE_DIR_AV1)
+    CNV_chan = Channel.fromPath(params.BASE_DIR_WGS_lnx02)    
+    NGC_chan = Channel.fromPath(params.BASE_DIR_NGC_lnx02)
+    EV8_chan = Channel.fromPath(params.BASE_DIR_WES_lnx02)
+
+
+    MV1_samples(Fastqfolder.out, CheckSheet.out, MV1_chan, currentday_chan)
+    AV1_samples(Cramfolder.out, CheckSheet.out, AV1_chan, currentday_chan)
+    CNV_samples(Cramfolder.out, CheckSheet.out, CNV_chan, currentday_chan)
+    NGC_samples(Cramfolder.out, CheckSheet.out, NGC_chan, currentday_chan)
+    EV8_Alm_Onk(Cramfolder.out, CheckSheet.out, EV8_chan, currentday_chan)
+
 }
+
